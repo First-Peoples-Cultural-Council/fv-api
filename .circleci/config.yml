@@ -1,0 +1,73 @@
+version: 2.1
+orbs:
+  aws-s3: circleci/aws-s3@1.0.11
+jobs:
+  build:
+    docker:
+      - image: circleci/openjdk:11-jdk
+    working_directory: ~/repo
+    environment:
+      JVM_OPTS: -Xmx1024m
+      TERM: dumb
+    steps:
+      - attach_workspace:
+            at: /tmp/workspace
+      - checkout
+      # Download and cache dependencies
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "build.gradle" }}
+            - v1-dependencies
+      - run: gradle dependencies
+      - save_cache:
+          paths:
+            - ~/.gradle
+          key: v1-dependencies-{{ checksum "build.gradle" }}
+      - run: gradle test
+      - run: gradle resolve
+      - run: gradle build
+      - store_artifacts:
+          path: openapi/FirstVoicesAPI.json
+          destination: openapi.json
+      - aws-s3/copy:
+            from: build/distributions/firstvoices.zip
+            to: 's3://firstvoices-api-build-destination'
+      - persist_to_workspace:
+          root: ./openapi
+          paths:
+            - FirstVoicesAPI.json
+  generate-docs:
+    working_directory: ~/repo
+    docker:
+      - image: circleci/node:lts
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+      - run:
+          command: 'find /tmp'
+      - run:
+          name: update-npm
+          command: 'sudo npm install -g npm@latest'
+      - run:
+          name: install redoc
+          command: 'sudo npm install -g redoc-cli'
+      - run:
+          name: generate static docs
+          command: redoc-cli bundle /tmp/workspace/FirstVoicesAPI.json
+      - store_artifacts:
+          path: ./redoc-static.html
+          destination: api.html
+      -   aws-s3/copy:
+              from: redoc-static.html
+              to: 's3://react-app-demo.firstvoices.io/documentation/redoc-static.html'
+              arguments: |
+                  --acl public-read \
+                  --cache-control "max-age=300"
+workflows:
+  version: 2
+  everything:
+    jobs:
+      - build
+      - generate-docs:
+          requires:
+            - build
